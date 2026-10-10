@@ -18,6 +18,8 @@ The code is a rewrite of the [paper's artifact](https://github.com/JLiu-1/QPET-A
 [Claude Code](https://claude.com/claude-code) (Claude Opus 5.5) under the direction of the paper's first author. It
 differs from the artifact in some respects, listed [below](#differences-from-the-paper).
 
+**Full documentation: [docs/](docs/README.md).**
+
 ## Installation
 
 You need CMake 3.19 or newer, a C++17 compiler with OpenMP, libzstd (found through pkg-config), and access to GitHub.
@@ -157,6 +159,8 @@ Another compressor is added with one adapter file; [docs/backends.md](docs/backe
 The numbers of the paper come from its [artifact](https://github.com/JLiu-1/QPET-Artifact), not from this code.
 
 ## Further documentation
+
+The documentation starts at [docs/README.md](docs/README.md), which lists every page:
 
 * [docs/concepts.md](docs/concepts.md): what is guaranteed, point-wise and regional QoIs, tolerances, how the
   compression works, limits.
