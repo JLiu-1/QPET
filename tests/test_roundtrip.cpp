@@ -142,6 +142,34 @@ int main() {
         run<float>(backend, {40, 56, 72}, "x^2", 0, 0, false, 4);
     }
 
+    // An error bound far below the magnitude of the data: a backend must not crash on it (SPERR used to, when the
+    // ratio exceeded what its 64-bit integer coefficients hold). The tuning can reach such bounds for QoIs with tiny
+    // per-value tolerances.
+    for (const std::string &backend : qpet::available_backends()) {
+        if (!qpet::get_backend(backend).supports(qpet::DType::F32, 3)) continue;
+        const std::vector<size_t> dims = {40, 56, 72};
+        std::vector<float> data = make_data<float>(dims, false);
+        qpet::Config conf;
+        conf.backend = backend;
+        conf.qoi = "x";
+        conf.qoi_tol = 1e-22;
+        conf.qoi_tol_mode = qpet::BoundMode::ABS;
+        conf.backend_eb = 1e-22;
+        conf.threads = 4;
+        try {
+            std::vector<uint8_t> cmp = qpet::compress(data.data(), dims, conf);
+            std::vector<float> dec(data.size());
+            qpet::decompress(cmp.data(), cmp.size(), dec.data());
+            qpet::VerifyResult v = qpet::verify(data.data(), dec.data(), qpet::DType::F32, data.size(), "x");
+            bool ok = v.max_data_err <= 1e-22;
+            std::printf("%s %s tiny error bound\n", ok ? "ok  " : "FAIL", backend.c_str());
+            if (!ok) failures++;
+        } catch (const std::exception &e) {
+            std::printf("FAIL %s tiny error bound: %s\n", backend.c_str(), e.what());
+            failures++;
+        }
+    }
+
     // a tolerance of zero means lossless
     for (const std::string &backend : qpet::available_backends()) run<float>(backend, {40, 56, 72}, "x^2", 0, 0, false);
 
