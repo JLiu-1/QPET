@@ -108,7 +108,11 @@ void run(const std::string &backend, const std::vector<size_t> &dims, const std:
 
 int main() {
     const std::vector<std::string> qois = {"x",       "x^2",     "x^3",       "log2(x)", "sin(10x)",
-                                           "tanh(x)", "1/x",     "sqrt(x)",   "exp(x)",  "x^2+log2(x)"};
+                                           "tanh(x)", "1/x",     "sqrt(x)",   "exp(x)",  "x^2+log2(x)",
+                                           // piecewise: continuous, with a jump, a threshold, a clipped range
+                                           "x < 2 ? x^2 : 4x - 4", "x < 2 ? x : x + 1", "x > 2.2 ? 1 : 0", "min(max(x, 1.5), 2.5)",
+                                           // steps: binning and a sign
+                                           "floor(8x)", "round(x)", "sign(x - 2) * x"};
     const std::vector<std::vector<size_t>> shapes = {{5000}, {120, 150}, {40, 56, 72}, {6, 20, 24, 30}, {300, 300, 300}};
     for (const std::string &backend : qpet::available_backends()) {
         for (const auto &dims : shapes) {

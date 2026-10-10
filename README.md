@@ -68,7 +68,7 @@ Run `qpet` without arguments for every option; the common ones:
 | `-i <file>` | original data, raw binary |
 | `-z <file>` | compressed file: written when compressing, read when decompressing |
 | `-o <file>` | decompressed data, raw binary |
-| `-q <QoI>` | the QoI as a function of one value: `"x^2"`, `"log2(x)"`, `"sin(10x)"`, `"tanh(x)"`, `"1/(x+1)"`, ... |
+| `-q <QoI>` | the QoI as a function of one value: `"x^2"`, `"log2(x)"`, `"tanh(x)"`, `"1/(x+1)"`, piecewise as `"x > 0 ? log2(x) : 0"`, ... |
 | `-r <edge>` | regional QoI: bound the error of the mean of the QoI over blocks of `<edge>` values per dimension |
 | `-m <mode> <tol>` | QoI error tolerance: `ABS`, or `REL` (relative to the value range of the QoI) |
 | `-M <mode> <bound>` | optional bound on the error of the data itself: `ABS` or `REL` |

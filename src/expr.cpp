@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <stdexcept>
 
@@ -23,6 +24,18 @@ enum OpCode : uint8_t {
     OP_MUL,
     OP_DIV,
     OP_POW,
+    OP_MIN,
+    OP_MAX,
+    // conditions: the result is 1 (true) or 0
+    OP_LT,
+    OP_LE,
+    OP_GT,
+    OP_GE,
+    OP_EQ,
+    OP_NE,
+    OP_AND,
+    OP_OR,
+    OP_SELECT,  // condition, value if true, value if false
     // one operand and a constant
     OP_ADDC,
     OP_MULC,
@@ -48,6 +61,12 @@ enum OpCode : uint8_t {
     OP_CBRT,
     OP_ABS,
     OP_SIGMOID,
+    OP_NOT,
+    // steps: constant between breakpoints
+    OP_FLOOR,
+    OP_CEIL,
+    OP_ROUND,
+    OP_SIGN,
 };
 
 struct Func {
@@ -59,9 +78,11 @@ const Func FUNCS[] = {
     {"atan", OP_ATAN},   {"sinh", OP_SINH}, {"cosh", OP_COSH}, {"tanh", OP_TANH}, {"exp", OP_EXP},
     {"log", OP_LOG},     {"ln", OP_LOG},    {"log2", OP_LOG2}, {"log10", OP_LOG10}, {"sqrt", OP_SQRT},
     {"cbrt", OP_CBRT},   {"abs", OP_ABS},   {"sigmoid", OP_SIGMOID},
+    {"floor", OP_FLOOR}, {"ceil", OP_CEIL}, {"round", OP_ROUND}, {"sign", OP_SIGN},
 };
 
 inline double sigmoid(double u) { return 1.0 / (1.0 + std::exp(-u)); }
+inline double sign(double u) { return u > 0 ? 1.0 : u < 0 ? -1.0 : u; }  // 0 at 0, NaN stays NaN
 
 inline double unary_value(OpCode op, double u) {
     switch (op) {
@@ -83,6 +104,11 @@ inline double unary_value(OpCode op, double u) {
         case OP_CBRT: return std::cbrt(u);
         case OP_ABS: return std::fabs(u);
         case OP_SIGMOID: return sigmoid(u);
+        case OP_NOT: return u == 0;
+        case OP_FLOOR: return std::floor(u);
+        case OP_CEIL: return std::ceil(u);
+        case OP_ROUND: return std::round(u);
+        case OP_SIGN: return sign(u);
         default: return std::nan("");
     }
 }
@@ -94,6 +120,16 @@ inline double binary_value(OpCode op, double a, double b) {
         case OP_MUL: return a * b;
         case OP_DIV: return a / b;
         case OP_POW: return std::pow(a, b);
+        case OP_MIN: return a < b ? a : b;
+        case OP_MAX: return a > b ? a : b;
+        case OP_LT: return a < b;
+        case OP_LE: return a <= b;
+        case OP_GT: return a > b;
+        case OP_GE: return a >= b;
+        case OP_EQ: return a == b;
+        case OP_NE: return a != b;
+        case OP_AND: return a != 0 && b != 0;
+        case OP_OR: return a != 0 || b != 0;
         default: return std::nan("");
     }
 }
@@ -113,6 +149,7 @@ inline Jet chain(const Jet &u, double g, double g1, double g2, double dist) {
     r.d1 = g1 * u.d1;
     r.d2 = g2 * u.d1 * u.d1 + g1 * u.d2;
     r.dist = std::min(u.dist, dist);
+    r.brk = u.brk;
     return r;
 }
 
@@ -128,6 +165,30 @@ inline Jet jet_mul(const Jet &a, const Jet &b) {
     r.d1 = a.d1 * b.v + a.v * b.d1;
     r.d2 = a.d2 * b.v + 2 * a.d1 * b.d1 + a.v * b.d2;
     r.dist = std::min(a.dist, b.dist);
+    r.brk = std::min(a.brk, b.brk);
+    return r;
+}
+
+// distance in x to the point where a and b cross, to first order
+inline double cross_dist(const Jet &a, const Jet &b) {
+    Jet d;
+    d.v = a.v - b.v;
+    d.d1 = a.d1 - b.d1;
+    return zero_dist(d);
+}
+
+// a condition or a choice between a and b: the result of the comparison, and where it flips
+inline Jet jet_compare(OpCode op, const Jet &a, const Jet &b) {
+    if (op == OP_MIN || op == OP_MAX) {
+        Jet r = (op == OP_MIN) == (a.v < b.v) ? a : b;
+        r.brk = std::min({a.brk, b.brk, cross_dist(a, b)});
+        return r;
+    }
+    Jet r;
+    r.v = binary_value(op, a.v, b.v);
+    r.dist = std::min(a.dist, b.dist);
+    r.brk = std::min(a.brk, b.brk);
+    if (op != OP_AND && op != OP_OR) r.brk = std::min(r.brk, cross_dist(a, b));
     return r;
 }
 
@@ -198,6 +259,21 @@ inline Jet jet_unary(OpCode op, const Jet &u) {
             double g = sigmoid(u.v), s = g * (1 - g);
             return chain(u, g, s, s * (1 - 2 * g), INF);
         }
+        case OP_NOT: return chain(u, u.v == 0, 0, 0, INF);
+        case OP_FLOOR:
+        case OP_CEIL:
+        case OP_ROUND:
+        case OP_SIGN: {
+            // constant around u, up to the nearest value of u where the step changes
+            double g = unary_value(op, u.v), to_step;
+            if (op == OP_SIGN) to_step = std::fabs(u.v);
+            else if (op == OP_ROUND) to_step = 0.5 - std::fabs(u.v - g);
+            else to_step = std::min(u.v - std::floor(u.v), std::ceil(u.v) - u.v);
+            Jet r = chain(u, g, 0, 0, INF);
+            double d = u.d1 != 0 ? std::fabs(to_step / u.d1) : (to_step == 0 ? 0 : INF);
+            r.brk = std::min(r.brk, std::isfinite(u.v) ? d : INF);
+            return r;
+        }
         default: return jet_const(std::nan(""));
     }
 }
@@ -207,7 +283,7 @@ inline Jet jet_unary(OpCode op, const Jet &u) {
 struct Node {
     OpCode op;
     double c = 0;
-    std::unique_ptr<Node> a, b;
+    std::unique_ptr<Node> a, b, c3;
 };
 using NodePtr = std::unique_ptr<Node>;
 
@@ -232,6 +308,16 @@ NodePtr make_binary(OpCode op, NodePtr a, NodePtr b) {
     n->op = op;
     n->a = std::move(a);
     n->b = std::move(b);
+    return n;
+}
+
+NodePtr make_select(NodePtr cond, NodePtr a, NodePtr b) {
+    if (cond->op == OP_CONST) return cond->c != 0 ? std::move(a) : std::move(b);
+    auto n = std::make_unique<Node>();
+    n->op = OP_SELECT;
+    n->a = std::move(cond);
+    n->b = std::move(a);
+    n->c3 = std::move(b);
     return n;
 }
 
@@ -274,7 +360,63 @@ class Parser {
         if (!accept(c)) fail(std::string("expected '") + c + "'");
     }
 
+    // is the next token the word (such as "and"), not followed by more letters?
+    bool at_word(const char *word) {
+        skip();
+        size_t n = std::strlen(word);
+        if (pos_ + n > s_.size()) return false;
+        for (size_t i = 0; i < n; i++)
+            if (std::tolower(static_cast<unsigned char>(s_[pos_ + i])) != word[i]) return false;
+        return !(pos_ + n < s_.size() && (std::isalnum(static_cast<unsigned char>(s_[pos_ + n])) || s_[pos_ + n] == '_'));
+    }
+
+    bool accept_word(const char *word) {
+        if (!at_word(word)) return false;
+        pos_ += std::strlen(word);
+        return true;
+    }
+
+    // condition ? value : value, the lowest precedence; chains to the right
     NodePtr expr() {
+        NodePtr n = disjunction();
+        if (!accept('?')) return n;
+        NodePtr a = expr();
+        expect(':');
+        return make_select(std::move(n), std::move(a), expr());
+    }
+
+    NodePtr disjunction() {
+        NodePtr n = conjunction();
+        while (accept_word("or")) n = make_binary(OP_OR, std::move(n), conjunction());
+        return n;
+    }
+
+    NodePtr conjunction() {
+        NodePtr n = negation();
+        while (accept_word("and")) n = make_binary(OP_AND, std::move(n), negation());
+        return n;
+    }
+
+    NodePtr negation() {
+        if (accept_word("not")) return make_unary(OP_NOT, negation());
+        return comparison();
+    }
+
+    NodePtr comparison() {
+        NodePtr n = sum();
+        char c = peek(), next = pos_ + 1 < s_.size() ? s_[pos_ + 1] : '\0';
+        OpCode op;
+        size_t len = 1;
+        if (c == '<') op = next == '=' ? (len = 2, OP_LE) : OP_LT;
+        else if (c == '>') op = next == '=' ? (len = 2, OP_GE) : OP_GT;
+        else if (c == '=' && next == '=') op = (len = 2, OP_EQ);
+        else if (c == '!' && next == '=') op = (len = 2, OP_NE);
+        else return n;
+        pos_ += len;
+        return make_binary(op, std::move(n), sum());
+    }
+
+    NodePtr sum() {
         NodePtr n = term();
         for (;;) {
             if (accept('+')) n = make_binary(OP_ADD, std::move(n), term());
@@ -336,7 +478,8 @@ class Parser {
             NodePtr n = make_const(v);
             // implicit multiplication: 10x, 2(x+1), 3sin(x)
             char next = peek();
-            if (std::isalpha(static_cast<unsigned char>(next)) || next == '_' || next == '(')
+            if ((std::isalpha(static_cast<unsigned char>(next)) || next == '_' || next == '(') && !at_word("and") &&
+                !at_word("or"))
                 return make_binary(OP_MUL, std::move(n), power());
             return n;
         }
@@ -360,9 +503,19 @@ class Parser {
     NodePtr call(const std::string &id) {
         expect('(');
         NodePtr a = expr();
-        NodePtr b;
+        NodePtr b, c;
         if (accept(',')) b = expr();
+        if (b && accept(',')) c = expr();
         expect(')');
+        if (id == "if") {  // if(condition, value if true, value if false)
+            if (!c) fail("if takes three arguments");
+            return make_select(std::move(a), std::move(b), std::move(c));
+        }
+        if (c) fail(id + " does not take three arguments");
+        if (id == "min" || id == "max") {
+            if (!b) fail(id + " takes two arguments");
+            return make_binary(id == "min" ? OP_MIN : OP_MAX, std::move(a), std::move(b));
+        }
         if (id == "pow") {
             if (!b) fail("pow takes two arguments");
             return make_binary(OP_POW, std::move(a), std::move(b));
@@ -411,6 +564,26 @@ struct ExprCompiler {
             case OP_MUL:
             case OP_DIV:
             case OP_POW: emit_binary(n); return;
+            case OP_MIN:
+            case OP_MAX:
+            case OP_LT:
+            case OP_LE:
+            case OP_GT:
+            case OP_GE:
+            case OP_EQ:
+            case OP_NE:
+            case OP_AND:
+            case OP_OR:
+                emit(*n.a);
+                emit(*n.b);
+                push(n.op, 0, -1);
+                return;
+            case OP_SELECT:
+                emit(*n.a);
+                emit(*n.b);
+                emit(*n.c3);
+                push(OP_SELECT, 0, -2);
+                return;
             default:
                 emit(*n.a);
                 push(n.op, 0, 0);
@@ -488,7 +661,17 @@ void run(const Ops &prog, const double *x, double *out, size_t n, double *st) {
             case OP_SUB:
             case OP_MUL:
             case OP_DIV:
-            case OP_POW: {
+            case OP_POW:
+            case OP_MIN:
+            case OP_MAX:
+            case OP_LT:
+            case OP_LE:
+            case OP_GT:
+            case OP_GE:
+            case OP_EQ:
+            case OP_NE:
+            case OP_AND:
+            case OP_OR: {
                 const double *b = a;
                 a -= n;
                 sp--;
@@ -497,10 +680,31 @@ void run(const Ops &prog, const double *x, double *out, size_t n, double *st) {
                     case OP_SUB: QPET_LOOP(a[i] - b[i]);
                     case OP_MUL: QPET_LOOP(a[i] * b[i]);
                     case OP_DIV: QPET_LOOP(a[i] / b[i]);
-                    default: QPET_LOOP(std::pow(a[i], b[i]));
+                    case OP_POW: QPET_LOOP(std::pow(a[i], b[i]));
+                    case OP_MIN: QPET_LOOP(a[i] < b[i] ? a[i] : b[i]);
+                    case OP_MAX: QPET_LOOP(a[i] > b[i] ? a[i] : b[i]);
+                    case OP_LT: QPET_LOOP(a[i] < b[i]);
+                    case OP_LE: QPET_LOOP(a[i] <= b[i]);
+                    case OP_GT: QPET_LOOP(a[i] > b[i]);
+                    case OP_GE: QPET_LOOP(a[i] >= b[i]);
+                    case OP_EQ: QPET_LOOP(a[i] == b[i]);
+                    case OP_NE: QPET_LOOP(a[i] != b[i]);
+                    case OP_AND: QPET_LOOP(a[i] != 0 && b[i] != 0);
+                    default: QPET_LOOP(a[i] != 0 || b[i] != 0);
                 }
                 break;
             }
+            case OP_SELECT: {  // both branches were computed for every value; keep the one the condition picks
+                const double *no = a, *yes = a - n;
+                a -= 2 * n;
+                sp -= 2;
+                QPET_LOOP(a[i] != 0 ? yes[i] : no[i]);
+            }
+            case OP_NOT: QPET_LOOP(a[i] == 0);
+            case OP_FLOOR: QPET_LOOP(std::floor(a[i]));
+            case OP_CEIL: QPET_LOOP(std::ceil(a[i]));
+            case OP_ROUND: QPET_LOOP(std::round(a[i]));
+            case OP_SIGN: QPET_LOOP(sign(a[i]));
             case OP_ADDC: QPET_LOOP(a[i] + c);
             case OP_MULC: QPET_LOOP(a[i] * c);
             case OP_DIVC: QPET_LOOP(a[i] / c);
@@ -576,7 +780,28 @@ Jet Expr::jet(double x) const {
                 a.d1 += s * b.d1;
                 a.d2 += s * b.d2;
                 a.dist = std::min(a.dist, b.dist);
+                a.brk = std::min(a.brk, b.brk);
                 sp--;
+                break;
+            }
+            case OP_MIN:
+            case OP_MAX:
+            case OP_LT:
+            case OP_LE:
+            case OP_GT:
+            case OP_GE:
+            case OP_EQ:
+            case OP_NE:
+            case OP_AND:
+            case OP_OR:
+                st[sp - 2] = jet_compare(static_cast<OpCode>(op.code), st[sp - 2], st[sp - 1]);
+                sp--;
+                break;
+            case OP_SELECT: {
+                const double flips = st[sp - 3].brk;
+                st[sp - 3] = st[sp - 3].v != 0 ? st[sp - 2] : st[sp - 1];
+                st[sp - 3].brk = std::min(st[sp - 3].brk, flips);
+                sp -= 2;
                 break;
             }
             case OP_MUL:
@@ -627,11 +852,33 @@ double pointwise_eb(const Expr &f, double x, double tau, double eb_cap) {
     double s = a + std::sqrt(a * a + 2 * b * tau);
     double eb = s > 0 ? 2 * tau / s : INF;
     eb = std::min({eb, j.dist, eb_cap});
-    if (!(eb > 0) || !std::isfinite(eb)) return eb > 0 ? eb : 0;
+    if (!(eb > 0)) return 0;
+    auto error_at = [&](double e) { return std::max(std::fabs(f.eval(x - e) - j.v), std::fabs(f.eval(x + e) - j.v)); };
+    // A piecewise function can jump where a condition flips. If stepping just across the nearest such point is out
+    // of tolerance, the value has to stay on its side of it.
+    // Beyond it another piece takes over, which the derivatives at x say nothing about: walk outwards from that
+    // point in doubling steps and stop before the first one that is out of tolerance.
+    if (j.brk < eb) {
+        // "just across" and "just short of" leave room for the rounding of x +- e
+        const double margin = std::max(j.brk, std::fabs(x)) * 1e-9 + std::numeric_limits<double>::min();
+        const double across = j.brk + margin;
+        if (!(error_at(across) <= tau)) {
+            eb = j.brk - margin;
+        } else {
+            for (double e = 2 * across; e < eb; e *= 2) {
+                if (!(error_at(e) <= tau)) {
+                    eb = e / 2;
+                    break;
+                }
+            }
+        }
+        if (!(eb > 0)) return 0;
+    }
+    if (!std::isfinite(eb)) return eb;
     // The Taylor estimate ignores the third derivative. Check both ends and shrink while one is out of tolerance:
     // in proportion to the excess when it is small, by half otherwise.
     for (int k = 0; k < 8; k++) {
-        double err = std::max(std::fabs(f.eval(x - eb) - j.v), std::fabs(f.eval(x + eb) - j.v));
+        double err = error_at(eb);
         if (err <= tau) break;
         eb *= std::isfinite(err) ? std::max(0.5, 0.999 * tau / err) : 0.5;
     }

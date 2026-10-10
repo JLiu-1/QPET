@@ -99,6 +99,53 @@ int main() {
         }
     }
 
+    // piecewise functions: values on both sides of every breakpoint, and error bounds that do not reach across a jump
+    const std::vector<Case> pieces = {
+        {"x < 0 ? 0 : sqrt(x)", [](double x) { return x < 0 ? 0 : std::sqrt(x); }, -3, 6},
+        {"x < 1 ? x^2 : x < 5 ? x : 5", [](double x) { return x < 1 ? x * x : x < 5 ? x : 5; }, -3, 8},
+        {"if(x >= 2 and x < 3, 10, x)", [](double x) { return x >= 2 && x < 3 ? 10 : x; }, -1, 6},
+        {"x >= 2 ? log2(x) : 0", [](double x) { return x >= 2 ? std::log2(x) : 0; }, -1, 6},
+        {"X <= 0 OR x > 3 ? 1 : 0", [](double x) { return x <= 0 || x > 3 ? 1.0 : 0.0; }, -2, 6},
+        {"not (x > 1) ? -1 : 1", [](double x) { return !(x > 1) ? -1.0 : 1.0; }, -2, 4},
+        {"max(x, 0)", [](double x) { return std::max(x, 0.0); }, -3, 3},
+        {"min(x^2, 4)", [](double x) { return std::min(x * x, 4.0); }, -4, 4},
+        {"x != 2 ? 1/(x - 2) : 0", [](double x) { return x != 2 ? 1 / (x - 2) : 0; }, 2.5, 6},
+        {"x == 1 ? 7 : 3x", [](double x) { return x == 1 ? 7 : 3 * x; }, -2, 4},
+        {"(x > 0 ? x : -x) + 2", [](double x) { return std::fabs(x) + 2; }, -3, 3},
+        {"floor(x)", [](double x) { return std::floor(x); }, -3, 3},
+        {"ceil(2x)/2", [](double x) { return std::ceil(2 * x) / 2; }, -3, 3},
+        {"round(x/0.3)", [](double x) { return std::round(x / 0.3); }, -3, 3},
+        {"sign(x - 1) * x^2", [](double x) { return (x > 1 ? 1.0 : x < 1 ? -1.0 : 0.0) * x * x; }, -3, 3},
+        {"floor(4 sigmoid(x))", [](double x) { return std::floor(4 / (1 + std::exp(-x))); }, -5, 5},
+    };
+    for (const Case &c : pieces) {
+        qpet::Expr f(c.text);
+        CHECK(!f.is_linear(), "%s is not linear", c.text.c_str());
+        const int steps = 601;
+        std::vector<double> xs(steps), batch(steps);
+        for (int i = 0; i < steps; i++) xs[i] = c.lo + (c.hi - c.lo) * i / (steps - 1);  // hits the breakpoints exactly
+        f.eval(xs.data(), batch.data(), steps);
+        for (int i = 0; i < steps; i++) {
+            double x = xs[i], v = c.ref(x);
+            CHECK(close(f.eval(x), v) && f.eval(x) == batch[i], "%s: eval(%g) = %g, want %g", c.text.c_str(), x, f.eval(x), v);
+            CHECK(close(f.jet(x).v, v), "%s: jet value at %g", c.text.c_str(), x);
+            for (double tau : {0.5, 1e-2, 1e-4}) {
+                double eb = qpet::pointwise_eb(f, x, tau, 1.0);
+                CHECK(eb >= 0 && eb <= 1.0, "%s: eb(%g) = %g out of range", c.text.c_str(), x, eb);
+                for (int k = -64; k <= 64; k++) {
+                    double e = std::fabs(c.ref(x + eb * k / 64.0) - v);
+                    CHECK(e <= tau * (1 + 1e-6) + 1e-12 * std::fabs(v), "%s: x=%g tau=%g eb=%g gives QoI error %g at %d/64",
+                          c.text.c_str(), x, tau, eb, e, k);
+                }
+            }
+        }
+    }
+    // a jump larger than the tolerance: the value must stay on its side, and exactly on the breakpoint it is exact
+    qpet::Expr step("x >= 2 ? 1 : 0");
+    CHECK(qpet::pointwise_eb(step, 1.9, 0.5, 10.0) < 0.1 + 1e-9 && qpet::pointwise_eb(step, 1.9, 0.5, 10.0) > 0.09, "step: eb just below the jump");
+    CHECK(qpet::pointwise_eb(step, 2.0, 0.5, 10.0) == 0, "step: on the breakpoint");
+    CHECK(qpet::pointwise_eb(step, 1.9, 2.0, 10.0) == 10.0, "step: a jump within the tolerance does not limit the bound");
+
     CHECK(qpet::Expr("x").is_linear(), "x is linear");
     CHECK(qpet::Expr("3 - x/2").is_linear(), "3 - x/2 is linear");
     CHECK(qpet::Expr("2(x+1)").is_linear(), "2(x+1) is linear");
@@ -114,7 +161,8 @@ int main() {
     CHECK(qpet::pointwise_eb(lg, -1.0, 1.0, 1.0) == 0, "log2 of a negative value needs an exact value");
     CHECK(qpet::pointwise_eb(lg, 0.0, 1.0, 1.0) == 0, "log2 of 0 needs an exact value");
 
-    for (const char *bad : {"", "x +", "foo(x)", "y", "(x", "2 ** ", "sin(x, 2)", "x x", "|x"}) {
+    for (const char *bad : {"", "x +", "foo(x)", "y", "(x", "2 ** ", "sin(x, 2)", "x x", "|x", "x < ", "x ? 1", "x > 0 ? 1 :",
+                            "if(x, 1)", "min(x)", "x and", "sin(x, 1, 2)", "x = 1"}) {
         bool threw = false;
         try {
             qpet::Expr f(bad);
