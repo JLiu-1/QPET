@@ -41,6 +41,7 @@ versions of their compressors.
 - Option `chunk`: edge of the chunks a 3-D volume is split into (default 256). Chunks are compressed in parallel
   with the given threads; the stream does not depend on the thread count (checked on one 3-D field).
 - 2-D slices are compressed without SPERR's own header; QPET's header carries the dimensions.
+- SPERR cannot compress data that holds NaN or infinite values, or magnitudes above about 2e31 (such as a fill value of 1e36); QPET reports an error for such data. The other backends accept it.
 
 ## Passing options
 

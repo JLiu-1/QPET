@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -33,18 +34,30 @@ class SPERRBackend : public Backend {
         void *dst = nullptr;
         size_t len = 0;
         int rc;
-        // SPERR turns the wavelet coefficients into integers of at most 64 bits with a step of 1.5 tolerances. A
-        // tolerance that is too small for the magnitude of the data overflows them: SPERR then fails, or crashes.
-        // Such a tolerance is raised to the smallest one that is safe. (QPET checks the result against its own
-        // bounds anyway; the tolerance the stream was made with is not needed to decompress it.)
+        // SPERR turns the wavelet coefficients into integers of at most 64 bits with a step of 1.5 tolerances, and
+        // the errors it corrects one by one into integers with a step of one. A tolerance that is too small for
+        // the magnitude of the data overflows the first, one that is too large overflows the second: SPERR then
+        // fails, or crashes. The tolerance is therefore kept between the two limits. (QPET checks the result
+        // against its own bounds anyway; the tolerance the stream was made with is not needed to decompress it.)
+        // Data that leaves no room between the limits, or holds values that are not finite, is refused here.
         size_t num = 1;
         for (size_t d : dims) num *= d;
         double largest = 0;
+        bool finite = true;
         for (size_t i = 0; i < num; i++) {
             double v = std::fabs(is_float ? static_cast<const float *>(data)[i] : static_cast<const double *>(data)[i]);
-            if (v > largest && std::isfinite(v)) largest = v;
+            if (!std::isfinite(v)) finite = false;
+            else if (v > largest) largest = v;
         }
-        const double tolerance = std::max(params.abs_eb, std::ldexp(largest, -48));
+        if (!finite) throw std::runtime_error("QPET: sperr cannot compress data with NaN or infinite values");
+        const double lowest = std::ldexp(largest, -48), highest = std::ldexp(1.0, 56);
+        if (lowest > highest) {
+            char text[32];
+            std::snprintf(text, sizeof(text), "%g", largest);
+            throw std::runtime_error(std::string("QPET: sperr cannot compress data with magnitudes above 2e31 (largest: ") +
+                                     text + ")");
+        }
+        const double tolerance = std::min(std::max(params.abs_eb, lowest), highest);
         if (dims.size() == 2) {
             rc = C_API::sperr_comp_2d(data, is_float, dims[1], dims[0], MODE_PWE, tolerance, 0, &dst, &len);
         } else {
