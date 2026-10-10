@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -31,14 +33,26 @@ class SPERRBackend : public Backend {
         void *dst = nullptr;
         size_t len = 0;
         int rc;
+        // SPERR turns the wavelet coefficients into integers of at most 64 bits with a step of 1.5 tolerances. A
+        // tolerance that is too small for the magnitude of the data overflows them: SPERR then fails, or crashes.
+        // Such a tolerance is raised to the smallest one that is safe. (QPET checks the result against its own
+        // bounds anyway; the tolerance the stream was made with is not needed to decompress it.)
+        size_t num = 1;
+        for (size_t d : dims) num *= d;
+        double largest = 0;
+        for (size_t i = 0; i < num; i++) {
+            double v = std::fabs(is_float ? static_cast<const float *>(data)[i] : static_cast<const double *>(data)[i]);
+            if (v > largest && std::isfinite(v)) largest = v;
+        }
+        const double tolerance = std::max(params.abs_eb, std::ldexp(largest, -48));
         if (dims.size() == 2) {
-            rc = C_API::sperr_comp_2d(data, is_float, dims[1], dims[0], MODE_PWE, params.abs_eb, 0, &dst, &len);
+            rc = C_API::sperr_comp_2d(data, is_float, dims[1], dims[0], MODE_PWE, tolerance, 0, &dst, &len);
         } else {
             size_t chunk = 256;
             auto it = params.options.find("chunk");
             if (it != params.options.end()) chunk = std::stoul(it->second);
             rc = C_API::sperr_comp_3d(data, is_float, dims[2], dims[1], dims[0], chunk, chunk, chunk, MODE_PWE,
-                                      params.abs_eb, static_cast<size_t>(params.threads), &dst, &len);
+                                      tolerance, static_cast<size_t>(params.threads), &dst, &len);
         }
         if (rc != 0) {
             std::free(dst);
