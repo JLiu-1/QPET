@@ -1,4 +1,6 @@
 #include <cmath>
+#include <cstring>
+#include <limits>
 #include <cstdio>
 #include <random>
 #include <string>
@@ -163,6 +165,41 @@ int main() {
         } catch (const std::exception &e) {
             std::printf("FAIL %s tiny error bound: %s\n", backend.c_str(), e.what());
             failures++;
+        }
+    }
+
+    // values of a huge magnitude (fill values) and values that are not finite: a backend either keeps the bound or
+    // reports that it cannot compress the data; it must not crash
+    for (const std::string &backend : qpet::available_backends()) {
+        for (float special : {1e25f, 1e36f, std::numeric_limits<float>::infinity(),
+                              std::numeric_limits<float>::quiet_NaN()}) {
+            for (double tol : {1e-3, 1e20}) {
+                std::vector<size_t> dims = {40, 56, 72};
+                std::vector<float> data = make_data<float>(dims, false);
+                data[12345] = special;
+                qpet::Config cfg;
+                cfg.backend = backend;
+                cfg.qoi = "x";
+                cfg.threads = 4;
+                cfg.qoi_tol = tol;
+                cfg.qoi_tol_mode = qpet::BoundMode::ABS;
+                std::string what = "ok";
+                bool ok = true;
+                try {
+                    std::vector<uint8_t> cmp = qpet::compress(data.data(), dims, cfg);
+                    std::vector<float> dec(data.size());
+                    qpet::decompress(cmp.data(), cmp.size(), dec.data());
+                    for (size_t i = 0; i < data.size() && ok; i++) {
+                        if (std::isfinite(data[i])) ok = std::fabs(double(dec[i]) - double(data[i])) <= tol;
+                        else ok = std::memcmp(&dec[i], &data[i], sizeof(float)) == 0 || (dec[i] != dec[i] && data[i] != data[i]);
+                    }
+                } catch (const std::exception &e) {
+                    what = std::string("refused: ") + e.what();
+                }
+                std::printf("%s %s special value %g, tolerance %g: %s\n", ok ? "ok  " : "FAIL", backend.c_str(),
+                            double(special), tol, what.c_str());
+                if (!ok) failures++;
+            }
         }
     }
 
