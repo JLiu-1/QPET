@@ -1,0 +1,18 @@
+# Installs the Python package together with the QPET library that the CMake build put next to it:
+#     cmake -S . -B build && cmake --build build -j && pip install build/python
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qpet"
+version = "2.0.0"
+description = "QoI-preserving error-bounded lossy compression on top of SZ3, SZo, ZFP or SPERR"
+requires-python = ">=3.8"
+dependencies = ["numpy"]
+
+[tool.setuptools]
+packages = ["qpet"]
+
+[tool.setuptools.package-data]
+qpet = ["libqpet_c.*", "qpet_c.dll"]
